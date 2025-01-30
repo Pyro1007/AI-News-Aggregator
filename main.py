@@ -12,7 +12,7 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
 from transformers import pipeline
-
+from textblob import TextBlob
 # Download necessary NLP model
 nltk.download('punkt')
 
@@ -123,4 +123,7 @@ for news in news_list:
         print("Could not extract summary.")
 
     print(f"Published Date: {pub_date}")
-    print("-" * 60)  # Separator line
+    print("-" * 60)  # Separator line
+    #sentiment analysis
+    analysis = TextBlob(news.text)
+    print(f'sentiment: {"positive" if analysis.polarity > 0 else "negetive" if analysis.polarity < 0 else "neutral" }')
