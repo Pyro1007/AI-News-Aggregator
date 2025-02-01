@@ -4,6 +4,7 @@ import requests
 import re
 import nltk
 import time
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
@@ -15,7 +16,7 @@ from textblob import TextBlob
 nltk.download('punkt')
 
 # Define RSS feed URL for political news
-site = 'https://news.google.com/rss/search?q=politics'
+site =  'https://news.google.com/rss/search?q={query}'
 
 # Open and read the RSS feed
 op = urlopen(site)
@@ -27,7 +28,7 @@ sp_page = soup(rd, 'xml')
 news_list = sp_page.find_all('item')
 
 # Initialize BERT summarization pipeline
-summarizer = pipeline("summarization")
+summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-6-6")
 
 # Function to resolve actual article URL from Google News
 def get_actual_url(google_news_url):
@@ -54,7 +55,7 @@ def fetch_article_text(url):
         paragraphs = page_soup.find_all("p")
         article_text = "\n".join([p.get_text() for p in paragraphs if len(p.get_text()) > 50])
 
-        return article_text if len(article_text) > 300 else None  # Ensure enough content
+        return article_text[:1024] if len(article_text) > 300 else None  # Ensure enough content
     except Exception:
         return None
 
@@ -69,7 +70,7 @@ def fetch_article_with_selenium(url):
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     try:
         driver.get(url)
-        time.sleep(5)  # Allow page to load
+        time.sleep(3)  # Reduced wait time
         page_source = driver.page_source
         driver.quit()
         page_soup = soup(page_source, "html.parser")
@@ -78,24 +79,31 @@ def fetch_article_with_selenium(url):
         paragraphs = page_soup.find_all("p")
         article_text = "\n".join([p.get_text() for p in paragraphs if len(p.get_text()) > 50])
 
-        return article_text if len(article_text) > 300 else None
+        return article_text[:1024] if len(article_text) > 300 else None
     except Exception:
         driver.quit()
         return None
 
 # Function to summarize text using BERT
-def summarize_text(text, max_length=250):
+def summarize_text(text, max_length=120):
     try:
         summary = summarizer(text, max_length=max_length, min_length=50, do_sample=False)
         return summary[0]["summary_text"].strip() if summary else None
     except Exception:
         return None
 
+# Current year filter
+current_year = datetime.now().year
+
 # Loop through each news item and extract details
 for news in news_list:
     raw_title = news.title.text
     link = news.link.text
     pub_date = news.pubDate.text
+
+    # Check if the news is from the current year
+    if str(current_year) not in pub_date:
+        continue
 
     # Extract the actual article URL
     actual_url = get_actual_url(link)
@@ -118,7 +126,7 @@ for news in news_list:
     if article_text:
         news_summary = summarize_text(article_text)
 
-        # **Ensure we only print articles where summary is successfully extracted**
+        # Ensure we only print articles where summary is successfully extracted
         if news_summary:
             print(f"Title: {title}")
             print(f"Source: {news_source}")
@@ -129,5 +137,6 @@ for news in news_list:
             analysis = TextBlob(title)
             sentiment = "positive" if analysis.polarity > 0 else "negative" if analysis.polarity < 0 else "neutral"
             print(f"Sentiment: {sentiment}")
-            print("-" * 60)  # Separator line
+            print("-" * 100)  # Separator line
+
 
