@@ -1,142 +1,166 @@
 from bs4 import BeautifulSoup as soup
 from urllib.request import urlopen
+from urllib.parse import urlparse, parse_qs
 import requests
 import re
 import nltk
 import time
-from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
-from transformers import pipeline
+from transformers import pipeline, MarianMTModel, MarianTokenizer
 from textblob import TextBlob
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
 
 # Download necessary NLP model
 nltk.download('punkt')
 
-# Define RSS feed URL for political news
-site =  'https://news.google.com/rss/search?q={query}'
+def get_rss_feed(category):
+    return f'https://news.google.com/rss/search?q={category}'
 
-# Open and read the RSS feed
-op = urlopen(site)
-rd = op.read()
-op.close()
-
-# Parse XML content
-sp_page = soup(rd, 'xml')
-news_list = sp_page.find_all('item')
-
-# Initialize BERT summarization pipeline
-summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-6-6")
-
-# Function to resolve actual article URL from Google News
-def get_actual_url(google_news_url):
-    match = re.search(r'url=(.*?)&', google_news_url)
-    if match:
-        return match.group(1)  # Extracted actual URL
+def parse_date(date_string):
     try:
-        response = requests.get(google_news_url, allow_redirects=True)
-        return response.url  # Resolved URL
-    except Exception:
-        return google_news_url
+        return datetime.strptime(date_string, "%a, %d %b %Y %H:%M:%S %Z")
+    except ValueError:
+        return None
 
-# Function to fetch article content using requests and BeautifulSoup
+def is_specific_date(pub_date, target_date):
+    pub_datetime = parse_date(pub_date)
+    return pub_datetime and pub_datetime.date() == target_date.date()
+
+# Initialize summarization pipeline
+summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6", truncation=True)
+
+def get_translation_pipeline(target_language):
+    model_name = f"Helsinki-NLP/opus-mt-en-{target_language}"
+    tokenizer = MarianTokenizer.from_pretrained(model_name)
+    model = MarianMTModel.from_pretrained(model_name)
+    return pipeline("translation", model=model, tokenizer=tokenizer)
+
+translator_hi = get_translation_pipeline("hi")
+translator_mr = get_translation_pipeline("mr")
+
+def get_actual_url(google_news_url):
+    parsed_url = urlparse(google_news_url)
+    query_params = parse_qs(parsed_url.query)
+    return query_params.get('url', [google_news_url])[0]
+
 def fetch_article_text(url):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code != 200:
             return None
-
         page_soup = soup(response.text, "html.parser")
-
-        # Extract readable text from common article containers
         paragraphs = page_soup.find_all("p")
         article_text = "\n".join([p.get_text() for p in paragraphs if len(p.get_text()) > 50])
-
-        return article_text[:1024] if len(article_text) > 300 else None  # Ensure enough content
+        return article_text if len(article_text) > 300 else None
     except Exception:
         return None
 
-# Function to extract article text using Selenium (for JavaScript-heavy sites)
 def fetch_article_with_selenium(url):
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920x1080")
-    options.add_argument("--log-level=3")  # Suppress logs
-
+    options.add_argument("--log-level=3")
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     try:
         driver.get(url)
-        time.sleep(3)  # Reduced wait time
+        time.sleep(5)
         page_source = driver.page_source
         driver.quit()
         page_soup = soup(page_source, "html.parser")
-
-        # Extract readable text
         paragraphs = page_soup.find_all("p")
         article_text = "\n".join([p.get_text() for p in paragraphs if len(p.get_text()) > 50])
-
-        return article_text[:1024] if len(article_text) > 300 else None
+        return article_text if len(article_text) > 300 else None
     except Exception:
         driver.quit()
         return None
 
-# Function to summarize text using BERT
-def summarize_text(text, max_length=120):
+def summarize_text(text):
     try:
-        summary = summarizer(text, max_length=max_length, min_length=50, do_sample=False)
+        input_length = len(text.split())
+        max_length = max(40, min(150, int(input_length * 0.5)))  # Ensuring appropriate max_length
+        truncated_text = " ".join(text.split()[:1024])  # Truncate without breaking words
+        summary = summarizer(truncated_text, max_length=max_length, min_length=max(20, int(max_length * 0.5)), do_sample=False)
         return summary[0]["summary_text"].strip() if summary else None
     except Exception:
         return None
 
-# Current year filter
-current_year = datetime.now().year
+def translate_text(text, translator):
+    try:
+        translation = translator(text)
+        return translation[0]['translation_text'] if translation else None
+    except Exception:
+        return None
 
-# Loop through each news item and extract details
-for news in news_list:
+def generate_hash(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+def process_news_item(news, target_date, seen_hashes, need_translation, translation_language):
     raw_title = news.title.text
     link = news.link.text
     pub_date = news.pubDate.text
-
-    # Check if the news is from the current year
-    if str(current_year) not in pub_date:
-        continue
-
-    # Extract the actual article URL
+    
+    if not is_specific_date(pub_date, target_date):
+        return
+    
     actual_url = get_actual_url(link)
-
-    # Extract the news source from the RSS feed
-    source_tag = news.source
-    news_source = source_tag.text if source_tag else "Not Available"
-
-    # Remove source name from the title
+    news_source = news.source.text if news.source else "Unknown"
     title = re.sub(r"\s*-\s*" + re.escape(news_source) + r"$", "", raw_title)
-
-    # Fetch article text
-    article_text = fetch_article_text(actual_url)
-
-    # If failed, try Selenium
-    if not article_text:
-        article_text = fetch_article_with_selenium(actual_url)
-
-    # Summarize if content is available
+    
+    article_text = fetch_article_text(actual_url) or fetch_article_with_selenium(actual_url)
     if article_text:
+        article_hash = generate_hash(article_text)
+        if article_hash in seen_hashes:
+            return
+        seen_hashes.add(article_hash)
+        
         news_summary = summarize_text(article_text)
+        translated_summary = None
+        
+        if news_summary and need_translation:
+            translator = translator_hi if translation_language == 'hi' else translator_mr
+            translated_summary = translate_text(news_summary, translator)
+        
+        sentiment = TextBlob(title).sentiment.polarity
+        sentiment_label = "positive" if sentiment > 0 else "negative" if sentiment < 0 else "neutral"
+        
+        print(f"Title: {title}")
+        print(f"Source: {news_source}")
+        print(f"Published Date: {pub_date}")
+        print(f"News Summary: {news_summary}")
+        if translated_summary:
+            print(f"Translated Summary ({translation_language}): {translated_summary}")
+        print(f"Sentiment: {sentiment_label}")
+        print("-" * 100)
 
-        # Ensure we only print articles where summary is successfully extracted
-        if news_summary:
-            print(f"Title: {title}")
-            print(f"Source: {news_source}")
-            print(f"Published Date: {pub_date}")
-            print(f"News Summary: {news_summary}")
+category = input("Enter the news category (e.g., politics, sports, technology): ")
+target_date_str = input("Enter the date to fetch news for (YYYY-MM-DD): ")
+target_date = datetime.strptime(target_date_str, "%Y-%m-%d")
 
-            # Sentiment analysis
-            analysis = TextBlob(title)
-            sentiment = "positive" if analysis.polarity > 0 else "negative" if analysis.polarity < 0 else "neutral"
-            print(f"Sentiment: {sentiment}")
-            print("-" * 100)  # Separator line
+need_translation = input("Do you need translation? (yes/no): ").strip().lower() == "yes"
+translation_language = None
+if need_translation:
+    translation_language = input("Enter the translation language (hi for Hindi, mr for Marathi): ").strip().lower()
+    if translation_language not in ['hi', 'mr']:
+        print("Invalid language choice. Translation will be skipped.")
+        need_translation = False
+
+site = get_rss_feed(category)
+op = urlopen(site)
+rd = op.read()
+op.close()
+sp_page = soup(rd, 'xml')
+news_list = sp_page.find_all('item')
+
+seen_hashes = set()
+with ThreadPoolExecutor(max_workers=5) as executor:
+    for news in news_list:
+        executor.submit(process_news_item, news, target_date, seen_hashes, need_translation, translation_language)
 
 
