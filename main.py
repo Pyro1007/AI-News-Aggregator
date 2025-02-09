@@ -15,7 +15,6 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 
-# Download necessary NLP model
 nltk.download('punkt')
 
 def get_rss_feed(category):
@@ -31,7 +30,6 @@ def is_specific_date(pub_date, target_date):
     pub_datetime = parse_date(pub_date)
     return pub_datetime and pub_datetime.date() == target_date.date()
 
-# Initialize summarization pipeline
 summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6", truncation=True)
 
 def get_translation_pipeline(target_language):
@@ -84,8 +82,8 @@ def fetch_article_with_selenium(url):
 def summarize_text(text):
     try:
         input_length = len(text.split())
-        max_length = max(40, min(150, int(input_length * 0.5)))  # Ensuring appropriate max_length
-        truncated_text = " ".join(text.split()[:1024])  # Truncate without breaking words
+        max_length = max(40, min(150, int(input_length * 0.5)))
+        truncated_text = " ".join(text.split()[:1024])
         summary = summarizer(truncated_text, max_length=max_length, min_length=max(20, int(max_length * 0.5)), do_sample=False)
         return summary[0]["summary_text"].strip() if summary else None
     except Exception:
@@ -133,6 +131,7 @@ def process_news_item(news, target_date, seen_hashes, need_translation, translat
         print(f"Title: {title}")
         print(f"Source: {news_source}")
         print(f"Published Date: {pub_date}")
+        print(f'News Link: \033]8;;{actual_url}\033\\Click Here\033]8;;\033\\')
         print(f"News Summary: {news_summary}")
         if translated_summary:
             print(f"Translated Summary ({translation_language}): {translated_summary}")
@@ -162,5 +161,4 @@ seen_hashes = set()
 with ThreadPoolExecutor(max_workers=5) as executor:
     for news in news_list:
         executor.submit(process_news_item, news, target_date, seen_hashes, need_translation, translation_language)
-
 
