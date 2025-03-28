@@ -1,6 +1,6 @@
 # News Summarizer and Sentiment Analyzer
 
-This Python project fetches, summarizes, translates, and analyzes the sentiment of news articles using AI-powered techniques.
+This python project fetches, summarizes, translates, and analyzes the sentiment of news articles using AI-powered techniques.
 
 ## Features
 - Fetches news articles from Google News RSS based on user-specified categories.
