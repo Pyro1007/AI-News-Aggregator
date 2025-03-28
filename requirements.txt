@@ -1,0 +1,10 @@
+torch
+transformers
+aiohttp
+beautifulsoup4
+selenium
+webdriver-manager
+textblob
+nltk
+deep-translator
+urllib3
